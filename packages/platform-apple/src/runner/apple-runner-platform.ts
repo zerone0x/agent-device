@@ -8,17 +8,16 @@ import {
   type DeviceInfo,
 } from '@agent-device/kernel/device';
 import { readHostCpuArchSync } from './host.ts';
+import type { AppleSdkName } from './xcode-bundle-identity.ts';
 
 /**
- * Ceiling on one Apple toolchain identity probe attempt (`xcodebuild -version`, `xcrun
- * --sdk <sdk> --show-sdk-version`). On a fresh macOS host Apple's syspolicyd signature
- * scan blocks the first `xcodebuild`/`xcrun` exec after boot for roughly 18 to 19 seconds
- * at 0% CPU, and the next exec of the same tool is instant; a budget sized for a warm
- * toolchain (the old 10 s / 5 s split) trips on that stall and reports a toolchain
- * timeout that says nothing about the toolchain (#2422).
- *
- * It sits beside the SDK names the probes run against so both Apple toolchain probers
- * read one value without either owning it.
+ * Ceiling on one Apple toolchain probe attempt (the native-build identity's `xcodebuild -version`,
+ * which runs through the Apple tool provider). On a fresh macOS host Apple's syspolicyd signature
+ * scan blocks the first `xcodebuild`/`xcrun` exec after boot for roughly 18 to 19 seconds at 0%
+ * CPU, and the next exec of the same tool is instant; a budget sized for a warm toolchain (the old
+ * 10 s / 5 s split) trips on that stall and reports a toolchain timeout that says nothing about the
+ * toolchain (#2422). The runner cache key reads local files instead and never pays it
+ * (`xcode-bundle-identity.ts`).
  */
 export const COLD_TOOLCHAIN_PROBE_TIMEOUT_MS = 30_000;
 
@@ -31,20 +30,12 @@ export const COLD_TOOLCHAIN_PROBE_TIMEOUT_MS = 30_000;
  */
 export const SHARED_FOREGROUND_GEOMETRY_HEADER_FILENAME = 'ForegroundApplicationGeometry.h';
 
-/**
- * The symlink `xcode-select -s` writes and `xcode-select -p` reads back. Resolving it answers which
- * developer dir the host selects, without a subprocess, so the toolchain memo can key on that answer
- * on a hit as well as on a miss. Beside the probe ceiling above so the constant sits with the
- * toolchain constants this package shares rather than inside the one module that reads it.
- */
-export const XCODE_SELECT_LINK_PATH = '/var/db/xcode_select_link';
-
 export type RunnerApplePlatformName = 'iOS' | 'tvOS' | 'macOS' | 'visionOS';
 
 type RunnerPlatformDeviceKind = 'simulator' | 'device';
 
 type RunnerPlatformProfile = {
-  sdkName: Record<RunnerPlatformDeviceKind, string>;
+  sdkName: Record<RunnerPlatformDeviceKind, AppleSdkName>;
   derivedBaseName: Record<RunnerPlatformDeviceKind, string>;
   xctestrunHints: Record<RunnerPlatformDeviceKind, { preferred: string[]; disallowed: string[] }>;
 };
@@ -316,7 +307,7 @@ export function resolveRunnerHandoffTarget(device: DeviceInfo): RunnerHandoffTar
 export function resolveRunnerSdkName(
   platformName: RunnerApplePlatformName,
   deviceKind: DeviceInfo['kind'],
-): string {
+): AppleSdkName {
   return RUNNER_PLATFORM_PROFILES[platformName].sdkName[runnerPlatformDeviceKind(deviceKind)];
 }
 
