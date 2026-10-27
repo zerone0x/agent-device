@@ -5,11 +5,12 @@ import { fileURLToPath } from 'node:url';
 import { KERNEL_MODULES } from './modules.ts';
 import {
   derivedAffectedModules,
+  importedBy,
   isTestFile,
   mutatedSources,
+  mutationTestFiles,
   ownedTestFiles,
   ownershipDeriver,
-  reachableFrom,
 } from './ownership.ts';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -31,30 +32,41 @@ test('a kernel is owned by the mirrored test that imports it directly', () => {
   );
 });
 
-// The omission that hand-listed ownership could not see: this test asserts over
-// normalizeError without importing packages/kernel/src/errors.ts itself.
-test('a kernel is owned by tests that reach it indirectly', () => {
-  const deriver = ownershipDeriver(repoRoot);
+// Reach is not ownership: nearly every test reaches the error kernel, and a
+// reach-based scope is the whole suite. This test exercises edge detection only
+// through the back runtime, so it does not measure scroll-edge-state.
+test('a test that only reaches a kernel through other modules does not own it', () => {
+  const testFile = 'packages/daemon/src/execution/__tests__/back-runtime.test.ts';
+  assert.ok(!ownershipDeriver(repoRoot).ownersOf(testFile).includes('scroll-edge-state'));
+  assert.ok(!mutationTestFiles(['scroll-edge-state'], repoRoot).includes(testFile));
+});
+
+test('a file absent from the tracked graph imports nothing', () => {
+  assert.deepEqual([...importedBy('src/untracked-fixture.ts', repoRoot)], []);
+});
+
+test('a mutation scope holds no test another Vitest project owns', () => {
+  // The apple-runner suites need that project's host setup, which Stryker's run does not install.
   assert.ok(
-    deriver.ownersOf('src/__tests__/daemon-error.test.ts').includes('kernel-errors'),
-    'daemon-error.test.ts exercises normalizeError but does not own kernel-errors',
+    !mutationTestFiles(['kernel-errors'], repoRoot).some((file) =>
+      file.startsWith('packages/platform-apple/src/runner/'),
+    ),
   );
   assert.ok(
-    deriver
-      .ownersOf('packages/daemon/src/execution/__tests__/back-runtime.test.ts')
-      .includes('scroll-edge-state'),
-    'back-runtime.test.ts exercises edge detection but does not own scroll-edge-state',
+    !isTestFile('packages/platform-apple/src/runner/__tests__/index-dispatch-disclosure.test.ts'),
   );
 });
 
-test('reachability includes its query root when the file is absent from the tracked graph', () => {
-  assert.deepEqual(
-    [...reachableFrom('src/untracked-fixture.ts', repoRoot)],
-    ['src/untracked-fixture.ts'],
+test('a test that takes a kernel through a barrel re-export owns it', () => {
+  // `@agent-device/ad-script` re-exports the codec this test exercises.
+  assert.ok(
+    mutationTestFiles(['target-annotation-serde'], repoRoot).includes(
+      'packages/selectors/src/target-evidence.test.ts',
+    ),
   );
 });
 
-test('ownership is complete: every test reaching a kernel owns it', () => {
+test('ownership is complete: every test importing a kernel owns it', () => {
   const owned = ownedTestFiles(repoRoot);
   for (const module of KERNEL_MODULES) {
     const sources = mutatedSources(module, repoRoot);
@@ -65,10 +77,10 @@ test('ownership is complete: every test reaching a kernel owns it', () => {
       `${module.id} has no owning tests — its score cannot be attributed`,
     );
     for (const testFile of files) {
-      const reachable = reachableFrom(testFile, repoRoot);
+      const imported = importedBy(testFile, repoRoot);
       assert.ok(
-        sources.some((source) => reachable.has(source)),
-        `${testFile} owns ${module.id} without reaching it`,
+        sources.some((source) => imported.has(source)),
+        `${testFile} owns ${module.id} without importing it`,
       );
     }
     // The converse: a diff to an owning test selects the module on a PR.
@@ -89,7 +101,7 @@ test('non-kernel sources and non-tests are not owned', () => {
   assert.ok(isTestFile('packages/kernel/src/errors-code-policy.test.ts'));
 });
 
-test('derived selection unions source ownership with test reachability', () => {
+test('derived selection unions source ownership with test imports', () => {
   assert.deepEqual(
     derivedAffectedModules(
       [
